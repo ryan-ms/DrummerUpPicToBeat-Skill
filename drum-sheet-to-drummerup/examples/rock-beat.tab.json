@@ -1,0 +1,55 @@
+{
+  "name": "Rock Beat 範例",
+  "bpm": 100,
+  "time": "4/4",
+  "grid": 2,
+  "bars": [
+    {
+      "comment": "基本 8 Beat：Hi-Hat 八分、2/4 拍小鼓、1、3 拍大鼓",
+      "crash": "x--- ---- ",
+      "hihat": "xx xx xx xx",
+      "snare": "-- X- -- X-",
+      "kick":  "x- -- x- --",
+      "sticking": { "hihat": "RR RR RR RR", "snare": "-- L- -- L-" }
+    },
+    {
+      "comment": "第 4 拍開踩、第 2 拍 ghost",
+      "hihat": "xx xx xx xo",
+      "snare": "-- Xg -- X-",
+      "kick":  "x- -- xx --"
+    },
+    {
+      "comment": "16 分音符過門 + Flam",
+      "grid": 4,
+      "snare": "F--- ---- ---- ----",
+      "tom1":  "---- xxxx ---- ----",
+      "tom2":  "---- ---- xxxx ----",
+      "tom3":  "---- ---- ---- xxxx",
+      "kick":  "x--- ---- ---- ----",
+      "sticking": {
+        "snare": "R--- ---- ---- ----",
+        "tom1":  "---- RLRL ---- ----",
+        "tom2":  "---- ---- RLRL ----",
+        "tom3":  "---- ---- ---- RLRL"
+      }
+    },
+    {
+      "comment": "6/8 拍：一拍 = 八分音符，grid 1 = 每拍一格",
+      "time": "6/8",
+      "grid": 1,
+      "ride":  "xxb xxx",
+      "snare": "--- X--",
+      "kick":  "x-- ---"
+    },
+    {
+      "comment": "回 4/4，第 4 拍三連音（grid 陣列逐拍指定）",
+      "time": "4/4",
+      "grid": [2, 2, 2, 3],
+      "hihat":     "x- x- x- ---",
+      "snare":     "-- r- -- xxx",
+      "kick":      "x- -- x- ---",
+      "hihatFoot": "-- x- -- ---",
+      "sticking": { "snare": "-- -- -- RLR" }
+    }
+  ]
+}
