@@ -89,7 +89,11 @@ def clean(s: str) -> str:
     return "".join(ch for ch in s if ch not in IGNORED)
 
 
-def build(tab: dict) -> list[dict]:
+BAR_KEYS = ("time", "grid", "sticking", "muteMetronome", "comment", "source")
+
+
+def build(tab: dict) -> tuple[list[dict], list[dict]]:
+    """回傳 (DrummerUp 模組清單, 每小節的附帶資訊 [{source, sig}])。"""
     name = str(tab.get("name") or "未命名")[:200]
     bpm = int(tab.get("bpm") or 90)
     if not 10 <= bpm <= 500:
@@ -111,6 +115,8 @@ def build(tab: dict) -> list[dict]:
     mute: list[bool] = []
     bar_steps: list[int] = []  # 每小節格數，給分檔用
     bar_beats: list[int] = []
+    bar_info: list[dict] = []  # 每小節來自哪張圖、內容指紋（找截圖重疊用）
+    source = None
 
     for bi, bar in enumerate(bars_in, start=1):
         where = f"第 {bi} 小節"
@@ -128,7 +134,9 @@ def build(tab: dict) -> list[dict]:
                 raise TabError(f"{where}：每拍格數 {g} 超出範圍 1–{MAX_SUBDIV}")
         steps = sum(per_beat)
 
-        notes = bar.get("notes", {k: v for k, v in bar.items() if k not in ("time", "grid", "sticking", "muteMetronome", "comment")})
+        if bar.get("source") is not None:
+            source = str(bar["source"])
+        notes = bar.get("notes", {k: v for k, v in bar.items() if k not in BAR_KEYS})
         bar_cells = {v: [0] * steps for v in VOICES}
         bar_marks = {k: {v: [False] * steps for v in VOICES} for k in OVERLAY_ALLOWED}
         for raw_voice, line in notes.items():
@@ -176,6 +184,12 @@ def build(tab: dict) -> list[dict]:
         mute.append(bool(bar.get("muteMetronome", False)))
         bar_steps.append(steps)
         bar_beats.append(beats)
+        bar_info.append({
+            "source": source,
+            "sig": (time, tuple(per_beat), tuple(tuple(bar_cells[v]) for v in VOICES),
+                    tuple(tuple(bar_stick[v]) for v in VOICES),
+                    tuple(tuple(bar_marks[k][v]) for k in OVERLAY_ALLOWED for v in VOICES)),
+        })
 
     # 依 MAX_BARS 切成多個模組
     out = []
@@ -208,7 +222,48 @@ def build(tab: dict) -> list[dict]:
         if any(mute[b0:b1]):
             p["metronomeMuteBars"] = mute[b0:b1]
         out.append(p)
-    return out
+    return out, bar_info
+
+
+def defaults_used(tab: dict) -> list[str]:
+    """譜上沒寫、用了預設值的設定，回覆時要告訴使用者。"""
+    used = []
+    if not tab.get("bpm"):
+        used.append("速度用預設 90 BPM")
+    bars = tab.get("bars") or [{}]
+    if tab.get("time") is None and not (isinstance(bars[0], dict) and bars[0].get("time")):
+        used.append("拍號用預設 4/4")
+    return used
+
+
+def overlap_warnings(bar_info: list[dict]) -> list[str]:
+    """相鄰兩張圖：前一張最後 k 小節跟下一張開頭 k 小節一模一樣 → 很可能是截圖重疊。"""
+    warns = []
+    n = len(bar_info)
+    sigs = [x["sig"] for x in bar_info]
+    i = 1
+    while i < n:
+        a, b = bar_info[i - 1]["source"], bar_info[i]["source"]
+        if a is None or b is None or a == b:
+            i += 1
+            continue
+        p0 = i
+        while p0 > 0 and bar_info[p0 - 1]["source"] == a:
+            p0 -= 1
+        n1 = i
+        while n1 < n and bar_info[n1]["source"] == b:
+            n1 += 1
+        def span(s0, s1):
+            return f"第 {s0} 小節" if s0 == s1 else f"第 {s0}–{s1} 小節"
+        for k in range(min(i - p0, n1 - i), 0, -1):
+            if sigs[i - k:i] == sigs[i:i + k]:
+                warns.append(
+                    f"「{a}」最後 {k} 小節（{span(i - k + 1, i)}）跟「{b}」開頭 {k} 小節（{span(i + 1, i + k)}）"
+                    "完全一樣：如果是截圖重疊，刪掉其中一份再轉一次；譜上本來就重複演奏就保留"
+                )
+                break
+        i += 1
+    return warns
 
 
 def check(p: dict) -> list[str]:
@@ -270,8 +325,11 @@ def check(p: dict) -> list[str]:
     return errs
 
 
-def preview(p: dict) -> str:
-    """把模組畫回文字格線，方便跟原始譜面對照。"""
+def preview(p: dict, sources: list | None = None, first_bar: int = 0) -> str:
+    """把模組畫回文字格線，方便跟原始譜面對照。
+
+    sources：每小節來自哪張圖（可省略）；first_bar：分檔時前面檔案的小節數，讓小節編號接續全曲。
+    """
     sd = p["subdiv"]
     lines = []
     beat = 0
@@ -279,7 +337,9 @@ def preview(p: dict) -> str:
     for bi, t in enumerate(p["timeSigs"], start=1):
         per_beat = sd[beat:beat + t["beats"]]
         n = sum(per_beat)
-        lines.append(f"── 第 {bi} 小節  {t['beats']}/{t['unit']}  每拍格數 {per_beat}")
+        src = sources[bi - 1] if sources and bi - 1 < len(sources) else None
+        new_src = src is not None and (bi == 1 or sources[bi - 2] != src)
+        lines.append(f"── 第 {bi + first_bar} 小節  {t['beats']}/{t['unit']}  每拍格數 {per_beat}" + (f"   ◀ {src}" if new_src else ""))
         for v in VOICES:
             cells = p["tracks"][v][step:step + n]
             if not any(cells):
@@ -328,12 +388,13 @@ def main() -> int:
         return 0
 
     try:
-        patterns = build(data)
+        patterns, bar_info = build(data)
     except TabError as e:
         print(f"❌ {e}", file=sys.stderr)
         return 1
 
     base = Path(a.output) if a.output else Path(re.sub(r'[\\/:*?"<>|]', "_", patterns[0]["name"].split(" (")[0]) + ".json")
+    first_bar = 0
     for i, p in enumerate(patterns, start=1):
         errs = check(p)
         if errs:  # 理論上不會發生；發生代表 build() 有 bug
@@ -343,7 +404,12 @@ def main() -> int:
         path.write_text(json.dumps(p, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"✅ 已輸出 {path}（{p['bars']} 小節）")
         if not a.quiet:
-            print(preview(p))
+            print(preview(p, [x["source"] for x in bar_info[first_bar:first_bar + p["bars"]]], first_bar))
+        first_bar += p["bars"]
+    for note in defaults_used(data):
+        print(f"ℹ️  譜上沒寫，{note}（回覆時要告訴使用者）")
+    for w in overlap_warnings(bar_info):
+        print(f"⚠️  {w}")
     return 0
 
 
