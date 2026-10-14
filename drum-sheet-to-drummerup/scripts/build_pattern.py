@@ -1,14 +1,21 @@
 #!/usr/bin/env python3
-"""把「鼓譜文字格線」(drum tab JSON) 轉成 DrummerUp 可以直接「匯入模組」的 JSON 檔。
+"""把「鼓譜文字格線」(drum tab JSON) 轉成 DrummerUp 可以直接「匯入模組」的 .dmup 檔。
 
 用法：
-    python build_pattern.py tab.json                 # 輸出 <name>.json（超過 30 小節自動分成多個檔）
-    python build_pattern.py tab.json -o out.json     # 指定輸出檔名
-    python build_pattern.py --check pattern.json     # 檢查一份已經是 DrummerUp 格式的 JSON
+    python build_pattern.py tab.json                  # 輸出 <name>.dmup（超過 30 小節輸出成一個群組檔）
+    python build_pattern.py tab.json -o out.dmup      # 指定輸出檔名（副檔名一律改成 .dmup）
+    python build_pattern.py tab.json --separate       # 超過 30 小節時改成每段一個模組檔（-1、-2 …）
+    python build_pattern.py --check song.dmup         # 檢查一份 .dmup 檔（模組或群組）
+    python build_pattern.py --convert old.json        # 把舊版 DrummerUp 模組 JSON 轉成 .dmup
 
 只用 Python 標準函式庫，任何有程式執行環境的 AI chat（Claude、ChatGPT 程式碼直譯器等）都能直接跑。
 輸入格式見 ../references/tab-format.md；輸出欄位規則跟 DrummerUp 的 sanitizePattern()
 （src/core/pattern.ts）一致，所以輸出檔匯入時不會被默默改掉內容。
+
+.dmup 檔格式對應 DrummerUp 的 src/core/dmup.ts 與 src/core/importFile.ts（2026-10 起只收 .dmup，舊的 .json 不再支援）：
+    模組：{ "format": "drummerup", "version": 1, "kind": "pattern", "pattern": { …模組… } }
+    群組：{ "format": "drummerup", "version": 1, "kind": "group", "groupName": "…", "patterns": [ … ] }
+模組本身用跟 App 匯出相同的精簡格式（compactPattern：拿掉整條空的軌道、手順與標記陣列，App 匯入時會補回）。
 """
 from __future__ import annotations
 
@@ -39,6 +46,10 @@ OPEN_VOICES = {"hihat"}
 BELL_VOICES = {"ride"}
 
 MAX_BARS = 30            # 編輯器單一模組小節數上限（MAX_PATTERN_BARS）
+MAX_GROUP_MEMBERS = 20   # 一個群組最多幾個模組（storage.ts 的 MAX_GROUP_MEMBERS）
+DMUP_FORMAT = "drummerup"
+DMUP_VERSION = 1         # dmup.ts 的 DMUP_VERSION；App 讀到比自己新的版本會拒絕匯入
+DMUP_EXT = ".dmup"
 MAX_BEATS = 16           # 每小節拍數上限
 MAX_SUBDIV = 16          # 每拍格數上限
 VALID_UNITS = {1, 2, 4, 8, 16}
@@ -266,6 +277,72 @@ def overlap_warnings(bar_info: list[dict]) -> list[str]:
     return warns
 
 
+MARK_KEYS = ("rim", "grace", "open", "bell")
+
+
+def compact(p: dict) -> dict:
+    """跟 App 的 compactPattern() 一樣：拿掉整條都空的軌道、手順、標記陣列（tracks 至少留空物件）。"""
+    def keep_used(rec, used):
+        return {v: arr for v, arr in (rec or {}).items() if any(used(x) for x in arr)}
+
+    out = {}
+    for k, val in p.items():
+        if k == "tracks":
+            out[k] = keep_used(val, bool)
+        elif k == "sticking" or k in MARK_KEYS:
+            kept = keep_used(val, (lambda x: x in ("R", "L")) if k == "sticking" else (lambda x: x is True))
+            if kept:
+                out[k] = kept
+        else:
+            out[k] = val
+    return out
+
+
+def dmup_pattern(p: dict) -> dict:
+    return {"format": DMUP_FORMAT, "version": DMUP_VERSION, "kind": "pattern", "pattern": compact(p)}
+
+
+def dmup_group(name: str, patterns: list[dict]) -> dict:
+    return {"format": DMUP_FORMAT, "version": DMUP_VERSION, "kind": "group", "groupName": name[:200],
+            "patterns": [compact(p) for p in patterns]}
+
+
+def unwrap(data) -> tuple[str, list[dict]]:
+    """拆開 .dmup 檔，回傳 (kind, 模組清單)；不是 .dmup 格式就丟 TabError（規則同 importFile.ts 的 parseImportFile）。"""
+    if not isinstance(data, dict) or data.get("format") != DMUP_FORMAT or not isinstance(data.get("version"), (int, float)):
+        if isinstance(data, dict) and "tracks" in data:
+            raise TabError("這是舊版的 DrummerUp 模組 JSON（沒有 .dmup 標頭），App 已經不收；"
+                           "用 --convert 轉成 .dmup")
+        raise TabError("不是 DrummerUp 的 .dmup 檔（缺少 \"format\": \"drummerup\" 標頭）")
+    if data["version"] > DMUP_VERSION:
+        raise TabError(f"檔案格式版本 {data['version']} 比這個 script 認得的 {DMUP_VERSION} 新，請更新 script")
+    kind = data.get("kind")
+    if kind == "pattern":
+        p = data.get("pattern")
+        if not isinstance(p, dict):
+            raise TabError("kind 是 pattern，但缺少 pattern 物件")
+        return kind, [p]
+    if kind == "group":
+        ps = data.get("patterns")
+        if not isinstance(ps, list) or not ps or not all(isinstance(p, dict) for p in ps):
+            raise TabError("kind 是 group，但 patterns 不是非空的模組陣列")
+        if len(ps) > MAX_GROUP_MEMBERS:
+            raise TabError(f"群組最多 {MAX_GROUP_MEMBERS} 個模組（App 會丟掉多的），目前 {len(ps)} 個")
+        if not isinstance(data.get("groupName"), str) or not data["groupName"].strip():
+            raise TabError("群組缺少 groupName（App 會改用預設名稱）")
+        return kind, ps
+    raise TabError(f"kind 只能是 pattern 或 group，目前是 {kind!r}")
+
+
+def dmup_path(path: Path) -> Path:
+    """App 只收副檔名 .dmup 的檔案。"""
+    return path if path.suffix.lower() == DMUP_EXT else path.with_suffix(DMUP_EXT)
+
+
+def write_dmup(path: Path, data: dict) -> None:
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def check(p: dict) -> list[str]:
     """檢查一份 DrummerUp JSON；回傳問題清單（空 = 沒問題）。規則對照 sanitizePattern()。"""
     errs = []
@@ -305,8 +382,10 @@ def check(p: dict) -> list[str]:
     if any(not isinstance(u, int) or not 1 <= u <= MAX_SUBDIV for u in sd):
         errs.append(f"subdiv 每一項必須是 1–{MAX_SUBDIV} 的整數")
     steps = sum(sd)
+    # App 匯出的檔案可能有自訂軌道（customVoices，id 是 c_ 開頭）
+    known = set(VOICES) | {c.get("id") for c in (p.get("customVoices") or []) if isinstance(c, dict)}
     for v, arr in p["tracks"].items():
-        if v not in VOICES:
+        if v not in known:
             errs.append(f"tracks.{v} 不是合法樂器（會被丟掉），合法：{', '.join(VOICES)}")
             continue
         if not isinstance(arr, list) or len(arr) != steps:
@@ -314,11 +393,11 @@ def check(p: dict) -> list[str]:
         elif any(c not in (0, 1, 2, 3) for c in arr):
             errs.append(f"tracks.{v} 只能包含 0/1/2/3")
     for v, arr in (p.get("sticking") or {}).items():
-        if v in VOICES and (not isinstance(arr, list) or len(arr) != steps or any(s not in ("", "R", "L") for s in arr)):
+        if v in known and (not isinstance(arr, list) or len(arr) != steps or any(s not in ("", "R", "L") for s in arr)):
             errs.append(f"sticking.{v} 長度必須是 {steps}，且只能是 \"\" / \"R\" / \"L\"")
     for k, allowed in OVERLAY_ALLOWED.items():
         for v, arr in (p.get(k) or {}).items():
-            if v in VOICES and (not isinstance(arr, list) or len(arr) != steps or any(not isinstance(b, bool) for b in arr)):
+            if v in known and (not isinstance(arr, list) or len(arr) != steps or any(not isinstance(b, bool) for b in arr)):
                 errs.append(f"{k}.{v} 長度必須是 {steps} 的 true/false 陣列")
             elif v in VOICES and any(arr) and v not in allowed:
                 errs.append(f"{k}.{v}：這種標記不能用在 {v}（會被編輯器忽略）")
@@ -341,13 +420,13 @@ def preview(p: dict, sources: list | None = None, first_bar: int = 0) -> str:
         new_src = src is not None and (bi == 1 or sources[bi - 2] != src)
         lines.append(f"── 第 {bi + first_bar} 小節  {t['beats']}/{t['unit']}  每拍格數 {per_beat}" + (f"   ◀ {src}" if new_src else ""))
         for v in VOICES:
-            cells = p["tracks"][v][step:step + n]
+            cells = p["tracks"].get(v, [0] * (step + n))[step:step + n]
             if not any(cells):
                 continue
             chars = []
             for i, c in enumerate(cells):
                 j = step + i
-                mark = next((k for k in ("open", "bell", "rim", "grace") if p.get(k, {}).get(v, [False] * (j + 1))[j]), None)
+                mark = next((k for k in ("open", "bell", "rim", "grace") if (p.get(k) or {}).get(v, [False] * (j + 1))[j]), None)
                 ch = {0: "-", 1: "x", 2: "X", 3: "g"}[c]
                 if c and mark:
                     ch = {"open": "o", "bell": "b", "rim": "r", "grace": "f"}[mark]
@@ -358,7 +437,7 @@ def preview(p: dict, sources: list | None = None, first_bar: int = 0) -> str:
             for u in per_beat:
                 groups.append("".join(chars[pos:pos + u]))
                 pos += u
-            stick = "".join(s or "-" for s in p["sticking"][v][step:step + n])
+            stick = "".join(s or "-" for s in (p.get("sticking") or {}).get(v, [""] * (step + n))[step:step + n])
             extra = f"   手順 {stick}" if stick.strip("-") else ""
             lines.append(f"   {v:<9} |{'|'.join(groups)}|{extra}")
         beat += t["beats"]
@@ -366,25 +445,59 @@ def preview(p: dict, sources: list | None = None, first_bar: int = 0) -> str:
     return "\n".join(lines)
 
 
+def run_check(data: dict, quiet: bool) -> int:
+    try:
+        kind, patterns = unwrap(data)
+    except TabError as e:
+        print(f"❌ {e}")
+        return 1
+    bad = False
+    for i, p in enumerate(patterns, start=1):
+        label = f"第 {i} 個模組「{p.get('name', '')}」" if kind == "group" else "模組"
+        errs = check(p)
+        if errs:
+            bad = True
+            print(f"❌ {label}有問題：")
+            for e in errs:
+                print("  -", e)
+        elif not quiet and isinstance(p.get("timeSigs"), list) and isinstance(p.get("subdiv"), list):
+            print(f"── {label}（{p['bars']} 小節）")
+            print(preview(p))
+    if bad:
+        return 1
+    what = f"群組「{data['groupName']}」，{len(patterns)} 個模組" if kind == "group" else "模組"
+    print(f"✅ 格式正確（{what}），可以匯入 DrummerUp")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("input")
-    ap.add_argument("-o", "--output", help="輸出檔名（多個模組時會加上 -1、-2 …）")
-    ap.add_argument("--check", action="store_true", help="只檢查一份 DrummerUp JSON")
+    ap.add_argument("-o", "--output", help="輸出檔名（副檔名一律是 .dmup；多個檔時會加上 -1、-2 …）")
+    ap.add_argument("--check", action="store_true", help="只檢查一份 .dmup 檔")
+    ap.add_argument("--convert", action="store_true", help="把舊版 DrummerUp 模組 JSON 轉成 .dmup")
+    ap.add_argument("--separate", action="store_true", help="超過 30 小節時輸出成多個模組檔，而不是一個群組檔")
     ap.add_argument("--quiet", action="store_true", help="不印文字預覽")
     a = ap.parse_args()
 
     data = json.loads(Path(a.input).read_text(encoding="utf-8"))
     if a.check:
+        return run_check(data, a.quiet)
+
+    if a.convert:
+        if not isinstance(data, dict) or "tracks" not in data:
+            print("❌ 這不是舊版的 DrummerUp 模組 JSON（要有 tracks 欄位）", file=sys.stderr)
+            return 1
         errs = check(data)
         if errs:
-            print("❌ 有問題：")
+            print("❌ 舊檔本身有問題，先修好再轉：")
             for e in errs:
                 print("  -", e)
             return 1
-        print("✅ 格式正確，可以匯入 DrummerUp")
-        if not a.quiet and "timeSigs" in data and "subdiv" in data:
-            print(preview(data))
+        p = {k: v for k, v in data.items() if k not in ("id", "visibleVoices")}  # 同 App 匯出：不帶 id
+        path = dmup_path(Path(a.output) if a.output else Path(a.input))
+        write_dmup(path, dmup_pattern(p))
+        print(f"✅ 已輸出 {path}")
         return 0
 
     try:
@@ -393,19 +506,48 @@ def main() -> int:
         print(f"❌ {e}", file=sys.stderr)
         return 1
 
-    base = Path(a.output) if a.output else Path(re.sub(r'[\\/:*?"<>|]', "_", patterns[0]["name"].split(" (")[0]) + ".json")
-    first_bar = 0
-    for i, p in enumerate(patterns, start=1):
+    name = str(data.get("name") or "未命名")[:200]
+    base = Path(a.output) if a.output else Path(re.sub(r'[\\/:*?"<>|]', "_", name) + DMUP_EXT)
+    if base.suffix.lower() != DMUP_EXT:
+        print(f"ℹ️  DrummerUp 只收 .dmup 檔，輸出檔名改成 {dmup_path(base).name}")
+        base = dmup_path(base)
+
+    for p in patterns:
         errs = check(p)
         if errs:  # 理論上不會發生；發生代表 build() 有 bug
             print("❌ 內部檢查失敗：", errs, file=sys.stderr)
             return 2
-        path = base if len(patterns) == 1 else base.with_name(f"{base.stem}-{i}{base.suffix}")
-        path.write_text(json.dumps(p, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"✅ 已輸出 {path}（{p['bars']} 小節）")
-        if not a.quiet:
-            print(preview(p, [x["source"] for x in bar_info[first_bar:first_bar + p["bars"]]], first_bar))
-        first_bar += p["bars"]
+
+    def numbered(i: int, n: int) -> Path:
+        return base if n == 1 else base.with_name(f"{base.stem}-{i}{base.suffix}")
+
+    # 要寫出的檔案：[(路徑, .dmup 內容, 這個檔裡的模組)]
+    files = []
+    if len(patterns) == 1 or a.separate:
+        for i, p in enumerate(patterns, start=1):
+            files.append((numbered(i, len(patterns)), dmup_pattern(p), [p]))
+    else:
+        # 超過 30 小節：整首放進一個群組檔，匯入一次就全部進模組庫（群組最多 20 個模組，再多才拆檔）
+        chunks = [patterns[k:k + MAX_GROUP_MEMBERS] for k in range(0, len(patterns), MAX_GROUP_MEMBERS)]
+        for i, chunk in enumerate(chunks, start=1):
+            gname = name if len(chunks) == 1 else f"{name} ({i}/{len(chunks)})"
+            files.append((numbered(i, len(chunks)), dmup_group(gname, chunk), chunk))
+
+    first_bar = 0
+    for path, content, ps in files:
+        # 寫出去之前，照 App 匯入的規則再拆開檢查一次
+        kind, back = unwrap(json.loads(json.dumps(content)))
+        assert len(back) == len(ps) and not any(check(x) for x in back), "內部檢查失敗"
+        write_dmup(path, content)
+        bars = sum(p["bars"] for p in ps)
+        what = f"群組「{content['groupName']}」，{len(ps)} 個模組、共 {bars} 小節" if kind == "group" else f"{bars} 小節"
+        print(f"✅ 已輸出 {path}（{what}）")
+        for p in ps:
+            if not a.quiet:
+                if kind == "group":
+                    print(f"── 模組「{p['name']}」")
+                print(preview(p, [x["source"] for x in bar_info[first_bar:first_bar + p["bars"]]], first_bar))
+            first_bar += p["bars"]
     for note in defaults_used(data):
         print(f"ℹ️  譜上沒寫，{note}（回覆時要告訴使用者）")
     for w in overlap_warnings(bar_info):

@@ -1,21 +1,21 @@
 # 鼓譜 → DrummerUp 轉檔 Skill
 
-上傳鼓譜圖片（可以多張、可以是只有一部分是譜的截圖）或 PDF，讓 AI 轉成 DrummerUp「匯入模組」可以直接開的 `.json` 檔。
+上傳鼓譜圖片（可以多張、可以是只有一部分是譜的截圖）或 PDF，讓 AI 轉成 DrummerUp「匯入模組」可以直接開的 `.dmup` 檔。
 
 ```
 drum-sheet-to-drummerup/
 ├── SKILL.md                        # Claude Skill 主檔
 ├── PORTABLE_PROMPT.md              # 給 ChatGPT / Gemini 等其他 AI 用的指令
-├── scripts/build_pattern.py        # tab JSON → DrummerUp JSON（純 Python 標準函式庫）
+├── scripts/build_pattern.py        # tab JSON → DrummerUp .dmup（純 Python 標準函式庫）
 ├── scripts/crop_sheet.py           # 從截圖找出譜的位置並裁切放大（需要 Pillow、numpy）
 ├── references/
 │   ├── reading-drum-notation.md    # 讀譜：五線譜位置 → 樂器
 │   ├── tab-format.md               # 中間格式說明
-│   └── drummerup-json.md           # DrummerUp JSON 格式（不能跑程式時用）
+│   └── drummerup-json.md           # DrummerUp .dmup 格式（不能跑程式時用）
 └── examples/rock-beat.tab.json     # 範例
 ```
 
-AI 不直接手寫 DrummerUp 的 JSON（每個樂器一條跟總格數一樣長的陣列，數錯一格整份就錯位），
+AI 不直接手寫 DrummerUp 的模組（每個樂器一條跟總格數一樣長的陣列，數錯一格整份就錯位），
 而是先寫成人看得懂的文字格線，再由 script 轉檔＋檢查格數。
 
 ## 安裝
@@ -47,7 +47,7 @@ AI 不直接手寫 DrummerUp 的 JSON（每個樂器一條跟總格數一樣長�
 2. 「指示」貼上 `PORTABLE_PROMPT.md`
 3. 「知識」上傳 `references/` 裡的三個 `.md`（加上 `build_pattern.py`）
 
-Gemini 通常不能執行上傳的 script，會改走「直接寫 JSON」的路線，長譜比較容易數錯格子；
+Gemini 通常不能執行上傳的 script，會改走「直接寫 .dmup 內容」的路線，長譜比較容易數錯格子；
 長的譜建議用 Claude 或 ChatGPT。
 
 ### 其他 AI
@@ -57,8 +57,9 @@ Gemini 通常不能執行上傳的 script，會改走「直接寫 JSON」的路�
 ## 自己手動用 script
 
 ```bash
-python3 scripts/build_pattern.py examples/rock-beat.tab.json -o rock.json   # 轉檔
-python3 scripts/build_pattern.py --check 某個模組.json                       # 檢查現成的 DrummerUp JSON
+python3 scripts/build_pattern.py examples/rock-beat.tab.json -o rock.dmup   # 轉檔
+python3 scripts/build_pattern.py --check 某個模組.dmup                       # 檢查現成的 .dmup 檔（模組或群組）
+python3 scripts/build_pattern.py --convert 舊模組.json                       # 舊版 .json 模組檔 → .dmup
 python3 scripts/crop_sheet.py 截圖1.png 截圖2.png -o crops --rows --debug     # 裁出截圖裡的譜（逐行另存）
 ```
 
@@ -70,3 +71,5 @@ python3 scripts/crop_sheet.py 截圖1.png 截圖2.png -o crops --rows --debug   
 `build_pattern.py` 的檢查規則對應 App 的 `sanitizePattern()`（`src/core/pattern.ts`）
 與樂器清單 `INSTRUMENTS`（`src/core/drumMap.ts`）。App 新增樂器、疊加標記或改小節上限
 （`MAX_PATTERN_BARS`）時，要一起更新 script 的 `VOICES`、`SYMBOLS`、`MAX_BARS` 和 references。
+輸出的 `.dmup` 標頭對應 `src/core/dmup.ts`（`DMUP_VERSION`）與 `src/core/importFile.ts`（`parseImportFile()`、`buildPatternFile()`／`buildGroupFile()`），
+App 改格式、加 `DMUP_VERSION` 或改群組上限（`MAX_GROUP_MEMBERS`）時，script 的 `DMUP_VERSION`、`MAX_GROUP_MEMBERS` 與 `drummerup-json.md` 要一起改。

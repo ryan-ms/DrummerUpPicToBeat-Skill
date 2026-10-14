@@ -1,13 +1,16 @@
 ---
 name: drum-sheet-to-drummerup
-description: 把鼓譜（圖片、截圖、掃描檔或 PDF，一張或多張）轉成 DrummerUp 可以「匯入模組」的 JSON 檔。當使用者上傳鼓譜並要求轉成 DrummerUp、DrummerUpSkill、鼓譜 JSON、練習模組，或想把譜子匯入打鼓練習 App 時使用。Converts drum sheet music images/PDFs into DrummerUp pattern JSON.
+description: 把鼓譜（圖片、截圖、掃描檔或 PDF，一張或多張）轉成 DrummerUp 可以「匯入模組」的 .dmup 檔。當使用者上傳鼓譜並要求轉成 DrummerUp、DrummerUpSkill、.dmup、鼓譜 JSON、練習模組，或想把譜子匯入打鼓練習 App 時使用。Converts drum sheet music images/PDFs into DrummerUp .dmup module files.
 ---
 
-# 鼓譜 → DrummerUp JSON
+# 鼓譜 → DrummerUp .dmup
 
-目標：產生一個（或多個）`.json` 檔，使用者在 DrummerUp 按「儲存 ▸ 匯入模組」就能直接開啟。
+目標：產生一個 `.dmup` 檔，使用者在 DrummerUp 按「儲存 ▾ ▸ 匯入模組」就能直接開啟。
 
-**不要直接手寫 DrummerUp 的 JSON**：它要求每個樂器都有一條跟總格數一樣長的陣列，
+**DrummerUp 只收 `.dmup` 檔**（2026-10 起）：內容是 JSON，外面包一層 `{"format":"drummerup","version":1,"kind":…}` 標頭，
+副檔名也一定要是 `.dmup`；以前的 `.json` 模組檔 App 已經不收。
+
+**不要直接手寫 DrummerUp 的模組**：它要求每個樂器都有一條跟總格數一樣長的陣列，
 手寫很容易數錯一格就整份錯位。一律先寫成「文字格線」（tab JSON），再用
 `scripts/build_pattern.py` 轉檔——script 會檢查每小節格數，錯了會精確指出哪一行。
 
@@ -46,9 +49,13 @@ description: 把鼓譜（圖片、截圖、掃描檔或 PDF，一張或多張）
 
 3. **轉檔。**
    ```bash
-   python scripts/build_pattern.py song.tab.json -o 歌名.json
+   python scripts/build_pattern.py song.tab.json -o 歌名.dmup
    ```
-   有錯就照錯誤訊息修 tab 再跑，直到成功。超過 30 小節會自動拆成多個檔（小節編號接續全曲）。
+   有錯就照錯誤訊息修 tab 再跑，直到成功。
+   - DrummerUp 一個模組最多 30 小節。超過時 script 會切成「歌名 (1/3)」「歌名 (2/3)」…幾個模組，
+     **放進同一個群組檔**（`kind: "group"`，一樣是一個 `.dmup`），使用者匯入一次就會在模組庫多一個群組、全部模組都在裡面
+     （小節編號接續全曲）。一個群組最多 20 個模組（600 小節），再長才會拆成 `歌名-1.dmup`、`歌名-2.dmup`。
+   - 使用者想要分開的模組檔就加 `--separate`。
    - `⚠️ …完全一樣`：相鄰兩張圖的交界有一模一樣的小節。回頭看原圖：是截圖重疊就刪掉一份重跑；
      譜上本來就重複演奏就保留，並在回覆說明。
    - `ℹ️ 譜上沒寫，…用預設…`：有用到預設速度／拍號，交付時一定要寫出來。
@@ -56,18 +63,20 @@ description: 把鼓譜（圖片、截圖、掃描檔或 PDF，一張或多張）
 4. **對照檢查。** script 會印出每小節的文字預覽，拿它**逐小節跟原譜比一次**
    （特別是小節數、每拍第一個音、重音位置、三連音）。發現錯就回第 2 步改。
 
-5. **交付。** 把 `.json` 檔給使用者下載，並簡短說明：
+5. **交付。** 把 `.dmup` 檔給使用者下載，並簡短說明：
    - 幾個小節、拍號、BPM。用了預設值要明講，例如「譜上沒標速度和拍號，先用預設 4/4、90 BPM，
      要改可以在 DrummerUp 裡調，或告訴我重新轉」。
    - 多張圖時：用了什麼順序、每張圖對應第幾到第幾小節、刪掉了哪些重疊的小節、哪些圖沒有譜。
    - 有哪些地方是猜的或換成近似樂器（例如第 4 顆 Tom 併入 Floor Tom、滾奏展開成十六分音符）。
-   - 匯入方式：DrummerUp ▸ 儲存選單 ▸「匯入模組」▸ 選這個檔案。
+   - 匯入方式：DrummerUp ▸ 儲存按鈕旁的 ▾ ▸「匯入模組」▸ 選這個檔案（群組檔也是同一個入口，或模組庫左側的「匯入群組」）。
+     匯入前會先跳出預覽視窗，確認後才存進模組庫，不會蓋掉正在編輯的模組。
+   - 下載後檔名如果被瀏覽器改成 `.json`、`.txt` 或多了 `.dmup.json`，要改回 `.dmup` 才匯入得了。
 
 ## 沒辦法執行程式的環境
 
-如果這個 AI chat 不能跑 Python，才直接寫最終 JSON，規則見
+如果這個 AI chat 不能跑 Python，才直接寫最終的 .dmup 內容，規則見
 [references/drummerup-json.md](references/drummerup-json.md)。寫完務必自己逐條核對長度公式，
-並提醒使用者：匯入後如果小節內容錯位，就是某條陣列長度數錯了。
+並提醒使用者：存檔時副檔名要是 `.dmup`；匯入後如果小節內容錯位，就是某條陣列長度數錯了。
 
 ## 注意
 
