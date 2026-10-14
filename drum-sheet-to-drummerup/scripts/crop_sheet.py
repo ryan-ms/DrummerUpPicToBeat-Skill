@@ -54,10 +54,28 @@ def close_gaps(mask: np.ndarray) -> np.ndarray:
     return mask | (left1 & right1) | (left1 & right2) | (left2 & right1)
 
 
+def vertical_run(mask: np.ndarray) -> np.ndarray:
+    """每個像素所在的「直向連續 True」有多長。"""
+    h = mask.shape[0]
+    up = np.zeros(mask.shape, dtype=np.int32)
+    down = np.zeros(mask.shape, dtype=np.int32)
+    up[0] = mask[0]
+    for y in range(1, h):
+        up[y] = (up[y - 1] + 1) * mask[y]
+    down[-1] = mask[-1]
+    for y in range(h - 2, -1, -1):
+        down[y] = (down[y + 1] + 1) * mask[y]
+    return np.where(mask, up + down - 1, 0)
+
+
 def find_lines(gray: np.ndarray, paper: np.ndarray):
     """回傳譜線清單：每條 (y上, y下, x起, x終)。"""
     h, w = gray.shape
-    runs = long_runs(close_gaps(gray < DARK), max(MIN_LINE * w, 60))
+    dark = gray < DARK
+    # 很高的深色區域（影片的深色背景、深色側欄）不可能是譜線。不先拿掉的話，譜線一碰到紙面邊緣
+    # （捲動中的譜、貼齊邊框的譜）就會跟旁邊的背景連成一大塊，整條被當成色塊丟掉
+    dark &= vertical_run(dark) <= max(60, round(0.15 * h))
+    runs = long_runs(close_gaps(dark), max(MIN_LINE * w, 60))
     max_thick = max(4, round(h * 0.004))
 
     # 上下相鄰、左右範圍差不多的長橫段併成一組（一條有厚度的線，或一整塊色塊）
@@ -164,23 +182,22 @@ def upscale(img: Image.Image) -> Image.Image:
     return img.resize((round(img.width * f), round(img.height * f)), Image.LANCZOS)
 
 
-def process(path: Path, idx: int, out_dir: Path, rows: bool, debug: bool) -> bool:
-    try:
-        img = ImageOps.exif_transpose(Image.open(path)).convert("RGB")
-    except Exception as e:  # noqa: BLE001
-        print(f"❌ {idx:02d} {path.name}：讀不到圖片（{e}）")
-        return False
-    rgb = np.asarray(img).astype(np.int16)
-    gray = rgb.mean(axis=2)
-    paper = (gray > PAPER) & ((rgb.max(axis=2) - rgb.min(axis=2)) < 40)
+def detect(img: Image.Image):
+    """找出圖裡的譜：回傳 {"box", "staves", "gray", "paper", "dark"}，找不到譜線回傳 None。
+
+    box 是含標題、速度的整塊譜面 (左, 上, 右, 下)；staves 是每一行譜的譜線清單。video_frames.py 也用這個函式。
+    """
+    rgb = np.asarray(img)  # uint8：比轉成 int16 再算快很多（影片每張畫面都要跑）
+    r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+    gray = (r.astype(np.uint16) + g + b) / 3.0
+    chroma = np.maximum(np.maximum(r, g), b) - np.minimum(np.minimum(r, g), b)
+    paper = (gray > PAPER) & (chroma < 40)
     dark = gray < DARK
     h, w = gray.shape
 
     staves = group_staves(find_lines(gray, paper), dark, w)
-    stem = f"{idx:02d}-{path.stem}"
     if not staves:
-        print(f"⚠️  {idx:02d} {path.name}：找不到譜線（可能是字母譜、譜太小或太模糊）→ 請改用目測裁切")
-        return False
+        return None
 
     x0 = min(ln[2] for s in staves for ln in s)
     x1 = max(ln[3] for s in staves for ln in s)
@@ -195,6 +212,24 @@ def process(path: Path, idx: int, out_dir: Path, rows: bool, debug: bool) -> boo
     right = expand(paper, (x0, top, x1, bottom), 1, 1, round(0.05 * w))
     pad = 4
     box = (max(0, left - pad), max(0, top - pad), min(w, right + pad + 1), min(h, bottom + pad + 1))
+    return {"box": box, "staves": staves, "gray": gray, "paper": paper, "dark": dark}
+
+
+def process(path: Path, idx: int, out_dir: Path, rows: bool, debug: bool,
+            img: Image.Image | None = None, stem: str | None = None) -> bool:
+    """裁切一張圖。img／stem 給 video_frames.py 用：直接傳入影格、指定輸出檔名開頭。"""
+    if img is None:
+        try:
+            img = ImageOps.exif_transpose(Image.open(path)).convert("RGB")
+        except Exception as e:  # noqa: BLE001
+            print(f"❌ {idx:02d} {path.name}：讀不到圖片（{e}）")
+            return False
+    stem = stem or f"{idx:02d}-{path.stem}"
+    found = detect(img)
+    if not found:
+        print(f"⚠️  {idx:02d} {path.name}：找不到譜線（可能是字母譜、譜太小或太模糊）→ 請改用目測裁切")
+        return False
+    box, staves = found["box"], found["staves"]
 
     out = out_dir / f"{stem}-sheet.png"
     upscale(img.crop(box)).save(out)

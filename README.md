@@ -1,6 +1,6 @@
 # 鼓譜 → DrummerUp 轉檔 Skill
 
-上傳鼓譜圖片（可以多張、可以是只有一部分是譜的截圖）或 PDF，讓 AI 轉成 DrummerUp「匯入模組」可以直接開的 `.dmup` 檔。
+上傳鼓譜圖片（可以多張、可以是只有一部分是譜的截圖）、PDF，或畫面上一段一段顯示譜的影片，讓 AI 轉成 DrummerUp「匯入模組」可以直接開的 `.dmup` 檔。
 
 ```
 drum-sheet-to-drummerup/          # ← skill 本體，安裝時用這個資料夾
@@ -8,6 +8,7 @@ drum-sheet-to-drummerup/          # ← skill 本體，安裝時用這個資料�
 ├── PORTABLE_PROMPT.md              # 給 ChatGPT / Gemini 等其他 AI 用的指令
 ├── scripts/build_pattern.py        # tab JSON → DrummerUp .dmup（純 Python 標準函式庫）
 ├── scripts/crop_sheet.py           # 從截圖找出譜的位置並裁切放大（需要 Pillow、numpy）
+├── scripts/video_frames.py         # 從影片找出每次換頁的畫面並裁切（另外需要 ffmpeg 或 opencv）
 ├── references/
 │   ├── reading-drum-notation.md    # 讀譜：五線譜位置 → 樂器
 │   ├── tab-format.md               # 中間格式說明
@@ -38,7 +39,7 @@ AI 不直接手寫 DrummerUp 的模組（每個樂器一條跟總格數一樣長
 
 1. 探索 GPT ▸ 建立 ▸ 設定（Configure）
 2. 「指令」貼上 `PORTABLE_PROMPT.md` 的全部內容
-3. 「知識」上傳：`scripts/build_pattern.py`、`scripts/crop_sheet.py`、`references/` 裡的三個 `.md`
+3. 「知識」上傳：`scripts/build_pattern.py`、`scripts/crop_sheet.py`、`scripts/video_frames.py`、`references/` 裡的三個 `.md`
 4. 「功能」勾選 **程式碼直譯器與資料分析**（讓它能跑 script、產生可下載的檔案）
 
 ### Gemini（Gem）
@@ -48,7 +49,7 @@ AI 不直接手寫 DrummerUp 的模組（每個樂器一條跟總格數一樣長
 3. 「知識」上傳 `references/` 裡的三個 `.md`（加上 `build_pattern.py`）
 
 Gemini 通常不能執行上傳的 script，會改走「直接寫 .dmup 內容」的路線，長譜比較容易數錯格子；
-長的譜建議用 Claude 或 ChatGPT。
+長的譜建議用 Claude 或 ChatGPT。影片也需要能執行 script 的環境，Gemini 上請改成每次換頁截一張圖。
 
 ### 其他 AI
 
@@ -61,10 +62,16 @@ python3 scripts/build_pattern.py examples/rock-beat.tab.json -o rock.dmup   # �
 python3 scripts/build_pattern.py --check 某個模組.dmup                       # 檢查現成的 .dmup 檔（模組或群組）
 python3 scripts/build_pattern.py --convert 舊模組.json                       # 舊版 .json 模組檔 → .dmup
 python3 scripts/crop_sheet.py 截圖1.png 截圖2.png -o crops --rows --debug     # 裁出截圖裡的譜（逐行另存）
+python3 scripts/video_frames.py 影片.mp4 -o frames --rows --debug            # 影片：每次換頁存一張並裁切
 ```
 
 `crop_sheet.py` 偵測五線譜、單線／雙線打擊譜的譜線；只有字母（例如 `K L R`）沒有譜線的圖偵測不到，
 這時 AI 會改成目測裁切。
+
+`video_frames.py` 每秒取 4 張畫面，比對譜面內容找出換頁的時間（只比對譜的範圍，旁邊的人、鼓不影響；
+前後幾張畫面投票，所以移動的游標、高亮不算換頁；譜面切成小塊比對，只換一行也抓得到），每頁取穩定那段時間正中間的畫面、
+從影片重新抓原始解析度存檔，並比對相鄰兩頁哪幾行重複。整排譜一直捲動的段落改成每捲過約半個畫面存一張（相鄰兩張一定重疊）。
+輸出 `overview.png`（所有頁的縮圖）與 `segments.json`（時間軸、重複的行）。1080p 影片每一分鐘約需 40 秒分析。
 
 ## 維護
 
