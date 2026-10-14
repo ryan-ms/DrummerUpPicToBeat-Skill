@@ -104,7 +104,10 @@ class Video:
                 import cv2  # type: ignore # noqa: F401
             except ImportError:
                 print("❌ 這個環境沒有 ffmpeg（也沒有 imageio-ffmpeg、opencv-python），讀不了影片。\n"
-                      "   可以試 `pip install imageio-ffmpeg`；不行的話請使用者在每次換頁後各截一張圖，改走截圖流程。")
+                      "   可以先試 `pip install imageio-ffmpeg` 再跑一次。還是不行的話，告訴使用者兩個選擇：\n"
+                      "   1. 改用電腦上的 Claude Code 處理影片（先裝 ffmpeg，例如 `winget install Gyan.FFmpeg`、"
+                      "`brew install ffmpeg`，或 `pip install imageio-ffmpeg`），影片直接從硬碟讀、沒有上傳大小限制；\n"
+                      "   2. 在影片每次換頁後各截一張圖，改走截圖流程（任何環境都能用）。")
                 sys.exit(2)
 
     def frames(self, fps: float, max_w: int, start: float, end: float | None):

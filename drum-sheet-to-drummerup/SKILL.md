@@ -51,7 +51,14 @@ description: 把鼓譜（圖片、截圖、掃描檔、PDF，或畫面上會換�
      以小節線、特徵明顯的小節對齊，從上一張最後讀到的小節之後接著寫，不要重複也不要跳過；
      對不上時看兩張之間的時間差、或請使用者確認。
    - 影片裡的譜太小、太糊（script 印「找不到譜線」、debug 圖框錯）時，請使用者換更高畫質的影片，
-     或在每次換頁後各截一張圖改走截圖流程。環境沒有 ffmpeg／opencv 時 script 會說明，也是改走截圖流程。
+     或在每次換頁後各截一張圖改走截圖流程。
+   - **環境讀不了影片**（script 印「這個環境沒有 ffmpeg…」）：先試 `pip install imageio-ffmpeg` 再跑一次；
+     還是不行就告訴使用者兩個選擇，讓他挑：
+     1. 改用電腦上的 **Claude Code** 處理影片：先裝 ffmpeg（Windows `winget install Gyan.FFmpeg`、macOS `brew install ffmpeg`，
+        或 `pip install imageio-ffmpeg`）和 `pip install pillow numpy`，把這個 skill 資料夾放進 `~/.claude/skills/`，
+        影片直接從硬碟讀、沒有上傳大小限制；
+     2. 在影片每次換頁後各截一張圖上傳，改走截圖流程（任何環境都能用）。
+     影片太大傳不上來時也是這兩個選擇。
    - 只看影片畫面上的譜，**不要從影片的聲音推測**沒寫在譜上的內容。
 
 1. **讀譜。** 讀 [references/reading-drum-notation.md](references/reading-drum-notation.md)，

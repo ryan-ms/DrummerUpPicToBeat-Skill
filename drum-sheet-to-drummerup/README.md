@@ -34,6 +34,23 @@ AI 不直接手寫 DrummerUp 的模組（每個樂器一條跟總格數一樣長
 ### Claude Code
 
 把資料夾複製到 `~/.claude/skills/`（所有專案可用）或專案的 `.claude/skills/`。
+要處理影片的話，本機要先裝好：
+
+```bash
+pip install pillow numpy
+winget install Gyan.FFmpeg     # Windows；macOS 用 brew install ffmpeg；或 pip install imageio-ffmpeg（不用系統安裝）
+```
+
+### 雲端與本機能做什麼
+
+同一份 skill 兩邊都能用：
+
+| | 雲端（claude.ai、ChatGPT） | 本機 Claude Code |
+|---|---|---|
+| 截圖、照片、PDF | ✅ | ✅ |
+| 影片 | 看環境有沒有 ffmpeg／opencv；沒有時會建議改用本機 Claude Code 或改成截圖 | ✅（先裝 ffmpeg） |
+
+雲端讀不了影片時，`video_frames.py` 會說明並結束，AI 會讓使用者選：改用本機的 Claude Code，或每次換頁截一張圖。
 
 ### ChatGPT（自訂 GPT）
 
