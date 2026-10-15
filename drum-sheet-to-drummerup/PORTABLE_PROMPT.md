@@ -6,6 +6,7 @@
 - `build_pattern.py`：把 tab JSON 轉成 DrummerUp 的 `.dmup` 檔並檢查格數
 - `crop_sheet.py`：從截圖裡找出譜的位置並裁切放大（需要 Pillow、numpy）
 - `video_frames.py`：從影片找出每次換頁的畫面、依時間存成圖片並裁切（需要 Pillow、numpy、ffmpeg 或 opencv；要跟 `crop_sheet.py` 放在同一個資料夾）
+- `scroll_stitch.py`：一整排譜往左捲的影片（FB／IG 短片常見）拼成一條長譜（需要 Pillow、numpy、ffmpeg）
 - `drummerup-json.md`：`.dmup` 檔本身的格式（只在不能執行程式時用）
 
 ## 流程
@@ -19,6 +20,8 @@
      依時間排好；先看 `frames/overview.png` 確認沒漏頁，之後每頁當成一張截圖處理。它印的
      `第 1 行 = #03 第 1 行` 代表跟上一頁重複的行，只寫一次；標「捲動」的畫面彼此一定有重疊，要對齊後接著寫；
      `跟 #01 是同一頁` 要判斷是反覆演奏（保留）還是回顧（不重複）。每頁第一個小節寫它印的 `"source": "影片 0:03.2–0:06.0"`。
+   - **一整排譜往左捲的影片**：改跑 `python scroll_stitch.py 影片.mp4 -o stitch`。先看 `stitch/band.png` 紅框有沒有剛好框住譜
+     （框錯用 `--band 上緣y:下緣y` 重跑），再依序讀 `read_01.png`…，每段跟下一段重疊約 60px，重疊的音符只算一次。
      不能執行程式、或 script 說環境沒有 ffmpeg（先試 `pip install imageio-ffmpeg`）時，告訴使用者兩個選擇：
      在影片每次換頁後各截一張圖上傳（任何環境都能用），或改用電腦上的 Claude Code 搭配這套 skill 處理影片（要先裝 ffmpeg）。
 1. 讀 `reading-drum-notation.md`，讀譜。先抓標題、速度、拍號、圖例、手順、反覆記號。小節很密就逐行放大看。
@@ -34,7 +37,7 @@
    請他存成副檔名 `.dmup` 的檔案（不是 `.json`、`.txt`），並提醒：匯入後內容錯位就是某條陣列長度數錯了。
 5. 回覆要說明：小節數、拍號、BPM（是不是預設值）、多張圖時每張對應哪幾小節、哪些地方是猜的或用近似樂器／近似記法處理（例如滾奏展開成十六分音符）。
    匯入方式：DrummerUp ▸「儲存」旁的 ▾ ▸「匯入模組」▸ 選 `.dmup` 檔（群組檔也可以從模組庫的「匯入群組」）。
-   下載後檔名被改成 `.json`／`.txt` 的話，要改回 `.dmup`。
+   不要提副檔名可能被改成 `.json`／`.txt` 之類的提醒。
 
 ## 原則
 
