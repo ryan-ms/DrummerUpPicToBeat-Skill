@@ -293,8 +293,18 @@ def _profiles(sig: dict) -> dict:
     return {"cols": m.sum(axis=0).astype(float), "rows": m.sum(axis=1).astype(float)}
 
 
-def _shift(a: np.ndarray, b: np.ndarray) -> float:
-    """b 相對 a 移動了多少（佔長度的比例）：用互相關找最吻合的位移，最多找半個長度。"""
+def _hprofile(sig: dict, other: dict) -> np.ndarray:
+    """量橫移用的直欄墨水分布：用整個畫面寬度（譜面範圍會隨內容捲進來而變寬，不能裁），上下取兩張畫面譜面範圍的聯集。"""
+    y0 = min(sig["box"][1], other["box"][1])
+    y1 = max(sig["box"][3], other["box"][3])
+    cols = sig["m"][y0:y1].sum(axis=0).astype(float)
+    # 幾乎整欄都是墨水的（固定不動的播放游標、譜面邊框）拿掉：它們不會動，留著會讓位移一直量成 0
+    cols[cols > 0.6 * max(1, y1 - y0)] = 0
+    return cols
+
+
+def _lag(a: np.ndarray, b: np.ndarray) -> float:
+    """b 相對 a 移動了多少（佔長度的比例，往左／往上是負的）：用互相關找最吻合的位移，最多找半個長度。"""
     n = min(len(a), len(b))
     if n < 8:
         return 0.0
@@ -304,7 +314,11 @@ def _shift(a: np.ndarray, b: np.ndarray) -> float:
     lags = np.arange(-(n - 1), n)
     corr = np.correlate(b, a, mode="full") / (n - np.abs(lags))  # 依重疊長度平均，不偏向位移 0
     ok = np.abs(lags) <= n // 2
-    return abs(int(lags[ok][np.argmax(corr[ok])])) / n
+    return int(lags[ok][np.argmax(corr[ok])]) / n
+
+
+def _shift(a: np.ndarray, b: np.ndarray) -> float:
+    return abs(_lag(a, b))
 
 
 def _moved(a: dict, b: dict) -> float:
@@ -429,8 +443,38 @@ class Segment:
         return recs[0][3] > 0 and max(r[3] for r in recs) > 1.15 * recs[0][3]
 
 
+def horizontal_scrolls(motion: list, step: float) -> list[tuple[float, float, int]]:
+    """整排譜一直往同一個方向橫移的時間段：回傳 [(開始, 結束, 方向 -1 往左／+1 往右)]。
+
+    motion 是每張畫面跟前一張比的橫向位移（佔譜面寬的比例）。每拍節奏都一樣的譜，隔 1/4 秒的畫面看起來幾乎一樣，
+    投票跟內容比對都看不出在動，只有直接量位移才抓得到。中間偶爾一兩張沒量到（停頓、模糊）不算中斷。
+    """
+    spans = []
+    run = None  # [開始, 結束, 方向, 沒在動的張數]
+    for t, dx in motion:
+        d = 0 if dx is None or abs(dx) < 0.005 else (1 if dx > 0 else -1)
+        if run and (d == run[2] or (d == 0 and run[3] < 2)):
+            run[3] = 0 if d else run[3] + 1
+            if d:
+                run[1] = t
+            continue
+        if run and run[1] - run[0] + step >= SCROLL_MIN:
+            spans.append((run[0], run[1] + step, run[2]))
+        run = [t, t, d, 0] if d else None
+    if run and run[1] - run[0] + step >= SCROLL_MIN:
+        spans.append((run[0], run[1] + step, run[2]))
+    # 同方向、相隔不到 1 秒的接起來（中間短暫量錯一下）
+    merged: list[tuple[float, float, int]] = []
+    for sp in spans:
+        if merged and merged[-1][2] == sp[2] and sp[0] - merged[-1][1] <= 1.0:
+            merged[-1] = (merged[-1][0], sp[1], sp[2])
+        else:
+            merged.append(sp)
+    return merged
+
+
 def segment_video(frames, fps: float, change: float, min_dur: float, scroll_every: float):
-    """回傳 (頁與捲動畫面的清單, 沒有譜的時間段, 分析了幾張畫面)。"""
+    """回傳 (頁與捲動畫面的清單, 沒有譜的時間段, 分析了幾張畫面, 橫向捲動的時間段)。"""
     step = 1 / fps
     items: list[Segment] = []
     no_sheet: list[list[float]] = []
@@ -482,6 +526,9 @@ def segment_video(frames, fps: float, change: float, min_dur: float, scroll_ever
             cur = Segment(t, sig)
         cur.add(t, found, sig, raw)
 
+    motion: list = []  # [(秒數, 跟前一張比的橫向位移)]
+    last: list = []    # [(秒數, 投票前的指紋)]，前一張有譜的畫面
+
     # 一邊讀一邊處理：只留前後 VOTE 張畫面在記憶體裡
     window: list = []  # [(秒數, found, 指紋)]，found 是 None = 這張沒有譜
     half = VOTE // 2
@@ -495,6 +542,11 @@ def segment_video(frames, fps: float, change: float, min_dur: float, scroll_ever
                 no_sheet.append([t, t])
             return
         handle(t, found, vote([w[2] for w in window if w[2] is not None], sig), sig)
+        dx = None
+        if last and t - last[0][0] <= step * 1.5 and last[0][1]["m"].shape == sig["m"].shape:
+            dx = _lag(_hprofile(last[0][1], sig), _hprofile(sig, last[0][1]))
+        motion.append((t, dx))
+        last[:] = [(t, sig)]
 
     for t, img in frames:
         total += 1
@@ -514,7 +566,7 @@ def segment_video(frames, fps: float, change: float, min_dur: float, scroll_ever
     close(cur)
     flush_run()
     no_sheet = [s for s in no_sheet if s[1] - s[0] + step >= 1.0]
-    return items, no_sheet, total
+    return items, no_sheet, total, horizontal_scrolls(motion, step)
 
 
 # ---------------------------------------------------------------- 輸出
@@ -585,7 +637,7 @@ def main() -> int:
         label = vpath.name if len(a.videos) > 1 else "影片"
         video = Video(vpath)
         try:
-            items, no_sheet, total = segment_video(video.frames(a.fps, a.max_width, secs(a.start) or 0.0, secs(a.end)),
+            items, no_sheet, total, hscrolls = segment_video(video.frames(a.fps, a.max_width, secs(a.start) or 0.0, secs(a.end)),
                                                    a.fps, a.change, a.min_dur, a.scroll_every)
         except RuntimeError as e:
             print(f"❌ {vpath.name}：讀不到影片（{e}）")
@@ -596,6 +648,13 @@ def main() -> int:
               + (f"、{scrolls} 張捲動畫面" if scrolls else ""))
         for s0, s1 in no_sheet:
             print(f"   （{ts(s0)}–{ts(s1 + 1 / a.fps)} 畫面上沒有譜）")
+        for h0, h1, d in hscrolls:
+            whole = h1 - h0 >= 0.8 * total / a.fps
+            rng = "" if whole else f" --start {ts(max(0.0, h0 - 1))} --end {ts(h1 + 1)}"
+            print(f"➡️  {ts(h0)}–{ts(h1)} 整排譜一直{'往左' if d < 0 else '往右'}捲動（橫向捲動的譜）。"
+                  f"這{'支影片' if whole else '段'}改用拼接：\n"
+                  f"     python scroll_stitch.py {vpath}{rng} -o stitch\n"
+                  f"   下面的分頁結果只拿來對照開頭、結尾的小節")
 
         for seg in items:
             # 從影片抓原始解析度的畫面；萬一那張偵測不到譜（剛好模糊），換下一個候選時間
