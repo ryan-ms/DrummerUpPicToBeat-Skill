@@ -6,7 +6,7 @@
   "bars": [
     {
       "comment": "基本 8 Beat：Hi-Hat 八分、2/4 拍小鼓、1、3 拍大鼓",
-      "crash": "x--- ---- ",
+      "crash": "x- -- -- --",
       "hihat": "xx xx xx xx",
       "snare": "-- X- -- X-",
       "kick":  "x- -- x- --",
