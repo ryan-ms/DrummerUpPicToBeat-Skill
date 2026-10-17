@@ -28,6 +28,8 @@ except ImportError:  # pragma: no cover
     sys.exit(2)
 
 DARK = 160          # 灰階小於這個值 = 墨水
+FAINT = 225         # 淡灰色的譜線（螢幕錄影、反鋸齒常見）：比這個值暗、而且比上下兩列都暗 LINE_CONTRAST 以上
+LINE_CONTRAST = 25
 PAPER = 200         # 灰階大於這個值、而且不太有顏色 = 紙面
 MIN_LINE = 0.25     # 譜線至少要佔圖寬的比例
 MIN_WIDTH = 1200    # 裁切結果寬度不足時放大到這個寬度（最多 3 倍）
@@ -46,18 +48,48 @@ def long_runs(mask: np.ndarray, min_len: float):
 
 
 def close_gaps(mask: np.ndarray) -> np.ndarray:
-    """補上 1–2 像素的小缺口（反鋸齒、壓縮造成的譜線斷點）。"""
-    left1 = np.roll(mask, 1, axis=1)
-    left2 = np.roll(mask, 2, axis=1)
-    right1 = np.roll(mask, -1, axis=1)
-    right2 = np.roll(mask, -2, axis=1)
-    return mask | (left1 & right1) | (left1 & right2) | (left2 & right1)
+    """補上 4 像素以內的小缺口（反鋸齒、壓縮造成的譜線斷點；符頭旁邊常斷 3 像素）。
+
+    橫向的形態學閉運算：先往左右各擴 2 像素再縮回來，線的兩端不會變長。
+    """
+    grown = mask.copy()
+    for k in (1, 2):
+        grown |= np.roll(mask, k, axis=1) | np.roll(mask, -k, axis=1)
+    closed = grown.copy()
+    for k in (1, 2):
+        closed &= np.roll(grown, k, axis=1) & np.roll(grown, -k, axis=1)
+    return mask | closed
+
+
+def vertical_run(mask: np.ndarray) -> np.ndarray:
+    """每個像素所在的「直向連續 True」有多長。"""
+    h = mask.shape[0]
+    up = np.zeros(mask.shape, dtype=np.int32)
+    down = np.zeros(mask.shape, dtype=np.int32)
+    up[0] = mask[0]
+    for y in range(1, h):
+        up[y] = (up[y - 1] + 1) * mask[y]
+    down[-1] = mask[-1]
+    for y in range(h - 2, -1, -1):
+        down[y] = (down[y + 1] + 1) * mask[y]
+    return np.where(mask, up + down - 1, 0)
 
 
 def find_lines(gray: np.ndarray, paper: np.ndarray):
     """回傳譜線清單：每條 (y上, y下, x起, x終)。"""
     h, w = gray.shape
-    runs = long_runs(close_gaps(gray < DARK), max(MIN_LINE * w, 60))
+    # 淡灰色的細線也算：比上下兩列（各隔 2 像素）都明顯暗。很多影片、螢幕錄影的譜線只有 170–190 的灰，
+    # 只看 DARK 的話五條線只剩壓著音符的那條找得到
+    up = np.empty_like(gray)
+    down = np.empty_like(gray)
+    up[2:], up[:2] = gray[:-2], 255
+    down[:-2], down[-2:] = gray[2:], 255
+    faint = (gray < FAINT) & (gray + LINE_CONTRAST < up) & (gray + LINE_CONTRAST < down)
+    dark = (gray < DARK) | faint
+    # 很高的深色區域（影片的深色背景、深色側欄）不可能是譜線。不先拿掉的話，譜線一碰到紙面邊緣
+    # （捲動中的譜、貼齊邊框的譜）就會跟旁邊的背景連成一大塊，整條被當成色塊丟掉
+    dark &= vertical_run(dark) <= max(60, round(0.15 * h))
+    runs = long_runs(close_gaps(dark), max(MIN_LINE * w, 60))
     max_thick = max(4, round(h * 0.004))
 
     # 上下相鄰、左右範圍差不多的長橫段併成一組（一條有厚度的線，或一整塊色塊）
@@ -129,11 +161,11 @@ def group_staves(lines, dark: np.ndarray, w: int):
     return [s for s in staves if sum(crossings(dark, ln) for ln in s) >= 2]
 
 
-def expand(paper: np.ndarray, box, axis: int, direction: int, max_dist: int) -> int:
+def expand(paper: np.ndarray, box, axis: int, direction: int, max_dist: int, tolerance: int = 4) -> int:
     """從框的邊往外走到紙面邊緣，回傳新的邊界。
 
     遇到整條都不是紙面的線（App 的分隔線、卡片邊框、色塊）就停；
-    內容（文字、符頭）會讓紙面比例下降，所以連續 4 列（或欄）偏低才算走出紙面。最多走 max_dist。
+    內容（文字、符頭、符尾橫梁）會讓紙面比例下降，所以連續 tolerance 列（或欄）偏低才算走出紙面。最多走 max_dist。
     """
     x0, y0, x1, y1 = box
     limit = paper.shape[0] if axis == 0 else paper.shape[1]
@@ -152,7 +184,7 @@ def expand(paper: np.ndarray, box, axis: int, direction: int, max_dist: int) -> 
             edge = pos
         else:
             misses += 1
-            if misses >= 4:
+            if misses >= tolerance:
                 break
     return edge
 
@@ -164,23 +196,22 @@ def upscale(img: Image.Image) -> Image.Image:
     return img.resize((round(img.width * f), round(img.height * f)), Image.LANCZOS)
 
 
-def process(path: Path, idx: int, out_dir: Path, rows: bool, debug: bool) -> bool:
-    try:
-        img = ImageOps.exif_transpose(Image.open(path)).convert("RGB")
-    except Exception as e:  # noqa: BLE001
-        print(f"❌ {idx:02d} {path.name}：讀不到圖片（{e}）")
-        return False
-    rgb = np.asarray(img).astype(np.int16)
-    gray = rgb.mean(axis=2)
-    paper = (gray > PAPER) & ((rgb.max(axis=2) - rgb.min(axis=2)) < 40)
+def detect(img: Image.Image):
+    """找出圖裡的譜：回傳 {"box", "staves", "gray", "paper", "dark"}，找不到譜線回傳 None。
+
+    box 是含標題、速度的整塊譜面 (左, 上, 右, 下)；staves 是每一行譜的譜線清單。video_frames.py 也用這個函式。
+    """
+    rgb = np.asarray(img)  # uint8：比轉成 int16 再算快很多（影片每張畫面都要跑）
+    r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+    gray = (r.astype(np.uint16) + g + b) / 3.0
+    chroma = np.maximum(np.maximum(r, g), b) - np.minimum(np.minimum(r, g), b)
+    paper = (gray > PAPER) & (chroma < 40)
     dark = gray < DARK
     h, w = gray.shape
 
     staves = group_staves(find_lines(gray, paper), dark, w)
-    stem = f"{idx:02d}-{path.stem}"
     if not staves:
-        print(f"⚠️  {idx:02d} {path.name}：找不到譜線（可能是字母譜、譜太小或太模糊）→ 請改用目測裁切")
-        return False
+        return None
 
     x0 = min(ln[2] for s in staves for ln in s)
     x1 = max(ln[3] for s in staves for ln in s)
@@ -189,12 +220,35 @@ def process(path: Path, idx: int, out_dir: Path, rows: bool, debug: bool) -> boo
     # 往上下最多延伸 1.5 行的距離（夠包含標題、速度、上下加線的音符），只有一行時用圖寬的 1/4
     pitch = float(np.median(np.diff([s[0][0] for s in staves]))) if len(staves) > 1 else 0.0
     reach = round(1.5 * pitch) if pitch else round(0.25 * w)
-    top = expand(paper, (x0, y0, x1, y1), 0, -1, reach)
-    bottom = expand(paper, (x0, y0, x1, y1), 0, 1, reach)
+    # 譜線間距：十六分音符的兩條橫梁加起來常比 4 列厚，往上找標題時要能穿過去
+    gaps = [b[0] - a[1] for st in staves for a, b in zip(st, st[1:])]
+    tol = max(4, round(1.5 * float(np.median(gaps)))) if gaps else 4
+    # 從最外側譜線再往外 3 像素開始找：淡灰色譜線緊鄰的那一列是反鋸齒的灰邊，不是紙面，從那裡開始會一步都走不出去
+    y0, y1 = max(0, y0 - 3), min(h - 1, y1 + 3)
+    top = expand(paper, (x0, y0, x1, y1), 0, -1, reach, tol)
+    bottom = expand(paper, (x0, y0, x1, y1), 0, 1, reach, tol)
     left = expand(paper, (x0, top, x1, bottom), 1, -1, round(0.05 * w))
     right = expand(paper, (x0, top, x1, bottom), 1, 1, round(0.05 * w))
     pad = 4
     box = (max(0, left - pad), max(0, top - pad), min(w, right + pad + 1), min(h, bottom + pad + 1))
+    return {"box": box, "staves": staves, "gray": gray, "paper": paper, "dark": dark}
+
+
+def process(path: Path, idx: int, out_dir: Path, rows: bool, debug: bool,
+            img: Image.Image | None = None, stem: str | None = None) -> bool:
+    """裁切一張圖。img／stem 給 video_frames.py 用：直接傳入影格、指定輸出檔名開頭。"""
+    if img is None:
+        try:
+            img = ImageOps.exif_transpose(Image.open(path)).convert("RGB")
+        except Exception as e:  # noqa: BLE001
+            print(f"❌ {idx:02d} {path.name}：讀不到圖片（{e}）")
+            return False
+    stem = stem or f"{idx:02d}-{path.stem}"
+    found = detect(img)
+    if not found:
+        print(f"⚠️  {idx:02d} {path.name}：找不到譜線（可能是字母譜、譜太小或太模糊）→ 請改用目測裁切")
+        return False
+    box, staves = found["box"], found["staves"]
 
     out = out_dir / f"{stem}-sheet.png"
     upscale(img.crop(box)).save(out)
